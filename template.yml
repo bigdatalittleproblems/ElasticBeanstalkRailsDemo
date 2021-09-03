@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: An AWS Elastic application that uses DynamoDB.
+Parameters:
+  DBPassword:
+    NoEcho: "true"
+    Description: Password MySQL database access
+    Type: String
+    MinLength: "8"
+    MaxLength: "41"
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: must contain only alphanumeric characters.
+
+Resources:
+  PubPrivateVPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: 172.31.0.0/16
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName"]]
+  PublicSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      CidrBlock: 172.31.0.0/24
+      MapPublicIpOnLaunch: "true"
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName", Public]]
+  PublicSubnet2:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""
+      VpcId: !Ref PubPrivateVPC
+      CidrBlock: 172.31.1.0/24
+      MapPublicIpOnLaunch: "true"
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName", Public]]
+  PrivateSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      CidrBlock: 172.31.3.0/24
+      MapPublicIpOnLaunch: "false"
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName", Private]]
+  PrivateSubnet2:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""
+      CidrBlock: 172.31.2.0/24
+      MapPublicIpOnLaunch: "false"
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName", Private]]
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName"]]
+  GatewayToInternet:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+  PublicRoute:
+    Type: "AWS::EC2::Route"
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+  NatGateway:
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: NatPublicIP
+    Properties:
+      AllocationId: !GetAtt NatPublicIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+  NatPublicIP:
+    Type: "AWS::EC2::EIP"
+    DependsOn: PubPrivateVPC
+    Properties:
+      Domain: vpc
+  PrivateRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref PubPrivateVPC
+  PrivateRoute:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnet1RouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnet2RouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+  application:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: AnyCompany
+      Description: RESTful web API in Java with Spring that provides an HTTP interface for creating and managing game sessions and users.
+  version:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    Properties:
+      ApplicationName: !Ref application
+      SourceBundle: ./package.zip
+  environment:
+    Type: AWS::ElasticBeanstalk::Environment
+    DependsOn: rdsDBInstance
+    Properties:
+      ApplicationName: !Ref application
+      EnvironmentName: BETA
+      OptionSettings:
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: AWS_REGION
+          Value: !Ref AWS::Region
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref PubPrivateVPC
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets
+          Value: !Ref PublicSubnet1
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: !Ref PublicSubnet1
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_HOSTNAME
+          Value: !GetAtt rdsDBInstance.Endpoint.Address
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_PORT
+          Value: !GetAtt rdsDBInstance.Endpoint.Port
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_DB_NAME
+          Value: anycompany
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_USERNAME
+          Value: admin
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: RDS_PASSWORD
+          Value: !Ref DBPassword
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !Ref instanceProfile
+      SolutionStackName:  64bit Amazon Linux 2 v3.3.5 running Ruby 2.7 
+      VersionLabel: !Ref version
+  instanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref role
+  role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: resources
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: ResourceAccess
+                Action:
+                  - "*"
+                Effect: Allow
+                Resource:
+                  - "arn:aws:dynamodb:*:*:table/scorekeep-*"
+                  - "arn:aws:sns:*:*:scorekeep-*"
+                  - "arn:aws:lambda:*:*:function/random-name"
+        - PolicyName: beanstalk
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: BucketAccess
+                Action:
+                  - "s3:Get*"
+                  - "s3:List*"
+                  - "s3:PutObject"
+                Effect: Allow
+                Resource: arn:aws:s3:::elasticbeanstalk*
+              - Sid: MetricsAccess
+                Action:
+                  - "cloudwatch:PutMetricData"
+                Effect: Allow
+                Resource: "*"
+      Path: /
+  rdsDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: "30"
+      AllowMajorVersionUpgrade: "false"
+      BackupRetentionPeriod: 0
+      DBName: anycompany
+      DeletionProtection: "false"
+      Engine: mysql
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBPassword
+      MultiAZ: "true"
+      DBInstanceClass: db.t3.micro
+      DBSubnetGroupName: !Ref kongDBSubnetGroup
+      # VPCSecurityGroups:
+      #   - !Ref dbSecurityGroup
+  kongDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet where Kong will be Deployed
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+Outputs:
+  PubPrivateVPCID:
+    Description: VPC ID
+    Value: !Ref "PubPrivateVPC"
+    Export:
+      Name: BeanstalkVPCID
+  PrivateSubnet1ID:
+    Description: Private Subnet A ID
+    Value: !Ref "PrivateSubnet1"
+    Export:
+      Name: BeanstalkPrivateSubnet1ID
+  PrivateSubnet2ID:
+    Description: Private Subnet B ID
+    Value: !Ref "PrivateSubnet2"
+    Export:
+      Name: BeanstalkPrivateSubnet2ID
+  PublicSubnet1ID:
+    Description: Public Subnet A ID
+    Value: !Ref "PublicSubnet1"
+    Export:
+      Name: BeanstalkPublicSubnet1ID
+  PublicSubnet2ID:
+    Description: Public Subnet B ID
+    Value: !Ref "PublicSubnet2"
+    Export:
+      Name: BeanstalkPublicSubnet2ID
+  endpoint:
+    Description: Website URL
+    Value: !GetAtt environment.EndpointURL
+    Export:
+      Name: !Join ["-", [!Ref "AWS::StackName", "endpoint"]]
