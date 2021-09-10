@@ -1,15 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: An AWS Elastic application that uses DynamoDB.
-Parameters:
-  DBPassword:
-    NoEcho: "true"
-    Description: Password MySQL database access
-    Type: String
-    MinLength: "8"
-    MaxLength: "41"
-    AllowedPattern: "[a-zA-Z0-9]*"
-    ConstraintDescription: must contain only alphanumeric characters.
-
 Resources:
   PubPrivateVPC:
     Type: "AWS::EC2::VPC"
@@ -148,20 +138,11 @@ Resources:
     DependsOn: rdsDBInstance
     Properties:
       ApplicationName: !Ref application
-      EnvironmentName: BETA
+      EnvironmentName: Staging
       OptionSettings:
         - Namespace: aws:elasticbeanstalk:application:environment
           OptionName: AWS_REGION
           Value: !Ref AWS::Region
-        - Namespace: aws:ec2:vpc
-          OptionName: VPCId
-          Value: !Ref PubPrivateVPC
-        - Namespace: aws:ec2:vpc
-          OptionName: ELBSubnets
-          Value: !Ref PublicSubnet1
-        - Namespace: aws:ec2:vpc
-          OptionName: Subnets
-          Value: !Ref PublicSubnet1
         - Namespace: aws:elasticbeanstalk:application:environment
           OptionName: RDS_HOSTNAME
           Value: !GetAtt rdsDBInstance.Endpoint.Address
@@ -173,13 +154,36 @@ Resources:
           Value: anycompany
         - Namespace: aws:elasticbeanstalk:application:environment
           OptionName: RDS_USERNAME
-          Value: admin
+          Value: 
+            Fn::Sub: "{{resolve:secretsmanager:${DBPasswordSSM}::username}}"
         - Namespace: aws:elasticbeanstalk:application:environment
           OptionName: RDS_PASSWORD
-          Value: !Ref DBPassword
+          Value: 
+            Fn::Sub: "{{resolve:secretsmanager:${DBPasswordSSM}::password}}"
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref PubPrivateVPC
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets
+          Value: !Ref PublicSubnet1
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: !Ref PublicSubnet1
         - Namespace: aws:autoscaling:launchconfiguration
           OptionName: IamInstanceProfile
           Value: !Ref instanceProfile
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: DeploymentPolicy
+          Value: Immutable
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: HealthCheckSuccessThreshold
+          Value: Warning
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: IgnoreHealthCheck
+          Value: true
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: Timeout
+          Value: 900
       SolutionStackName:  64bit Amazon Linux 2 v3.3.5 running Ruby 2.7 
       VersionLabel: !Ref version
   instanceProfile:
@@ -232,6 +236,21 @@ Resources:
                 Effect: Allow
                 Resource: "*"
       Path: /
+  DBPasswordSSM:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: RDSPASSWORD
+      Description: "This secret has a dynamically generated secret password."
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\'
+      Tags:
+        -
+          Key: AppName
+          Value: AnyCompany
+  ########
   rdsDBInstance:
     Type: AWS::RDS::DBInstance
     Properties:
@@ -241,17 +260,19 @@ Resources:
       DBName: anycompany
       DeletionProtection: "false"
       Engine: mysql
-      MasterUsername: admin
-      MasterUserPassword: !Ref DBPassword
-      MultiAZ: "true"
+      MasterUsername:
+        Fn::Sub: "{{resolve:secretsmanager:${DBPasswordSSM}::username}}"
+      MasterUserPassword:
+        Fn::Sub: "{{resolve:secretsmanager:${DBPasswordSSM}::password}}"
+      MultiAZ: "false"
       DBInstanceClass: db.t3.micro
-      DBSubnetGroupName: !Ref kongDBSubnetGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
       # VPCSecurityGroups:
       #   - !Ref dbSecurityGroup
-  kongDBSubnetGroup:
+  DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: Subnet where Kong will be Deployed
+      DBSubnetGroupDescription: Subnet where RDS will be Deployed
       SubnetIds:
         - !Ref PrivateSubnet1
         - !Ref PrivateSubnet2
